@@ -190,8 +190,10 @@ export type ReactStackTrace = Array<ReactCallSite>;
 export type ReactComponentInfo = {
   +name?: string,
   +env?: string,
+  +key?: null | string,
   +owner?: null | ReactComponentInfo,
   +stack?: null | ReactStackTrace,
+  +props?: null | {[name: string]: mixed},
   // Stashed Data for the Specific Execution Environment. Not part of the transport protocol
   +debugStack?: null | Error,
   +debugTask?: null | ConsoleTask,

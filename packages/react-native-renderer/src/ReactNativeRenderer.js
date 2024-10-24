@@ -8,7 +8,7 @@
  */
 
 import type {ReactPortal, ReactNodeList} from 'shared/ReactTypes';
-import type {ElementRef, Element, ElementType} from 'react';
+import type {ElementRef, ElementType, MixedElement} from 'react';
 import type {FiberRoot} from 'react-reconciler/src/ReactInternalTypes';
 import type {RenderRootOptions} from './ReactNativeTypes';
 
@@ -26,7 +26,6 @@ import {
   defaultOnRecoverableError,
 } from 'react-reconciler/src/ReactFiberReconciler';
 // TODO: direct imports like some-package/src/* are bad. Fix me.
-import {getStackByFiberInDevAndProd} from 'react-reconciler/src/ReactFiberComponentStack';
 import {createPortal as createPortalImpl} from 'react-reconciler/src/ReactPortal';
 import {
   setBatchingImplementation,
@@ -35,7 +34,6 @@ import {
 // Modules provided by RN:
 import {UIManager} from 'react-native/Libraries/ReactPrivate/ReactNativePrivateInterface';
 
-import {getClosestInstanceFromNode} from './ReactNativeComponentTree';
 import {getInspectorDataForInstance} from './ReactNativeFiberInspector';
 import {LegacyRoot} from 'react-reconciler/src/ReactRootTags';
 import {
@@ -117,7 +115,7 @@ function nativeOnCaughtError(
 }
 
 function render(
-  element: Element<ElementType>,
+  element: MixedElement,
   containerTag: number,
   callback: ?() => void,
   options: ?RenderRootOptions,
@@ -194,19 +192,7 @@ function createPortal(
 
 setBatchingImplementation(batchedUpdatesImpl, discreteUpdates);
 
-function computeComponentStackForErrorReporting(reactTag: number): string {
-  const fiber = getClosestInstanceFromNode(reactTag);
-  if (!fiber) {
-    return '';
-  }
-  return getStackByFiberInDevAndProd(fiber);
-}
-
 const roots = new Map<number, FiberRoot>();
-
-const Internals = {
-  computeComponentStackForErrorReporting,
-};
 
 export {
   // This is needed for implementation details of TouchableNativeFeedback
@@ -220,7 +206,6 @@ export {
   unmountComponentAtNodeAndRemoveContainer,
   createPortal,
   batchedUpdates as unstable_batchedUpdates,
-  Internals as __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED,
   // This export is typically undefined in production builds.
   // See the "enableGetInspectorDataForInstanceInProduction" flag.
   getInspectorDataForInstance,

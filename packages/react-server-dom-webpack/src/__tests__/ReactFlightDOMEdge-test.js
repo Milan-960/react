@@ -23,21 +23,20 @@ if (typeof File === 'undefined' || typeof FormData === 'undefined') {
 // Patch for Edge environments for global scope
 global.AsyncLocalStorage = require('async_hooks').AsyncLocalStorage;
 
-// Don't wait before processing work on the server.
-// TODO: we can replace this with FlightServer.act().
-global.setTimeout = cb => cb();
-
 let serverExports;
 let clientExports;
 let webpackMap;
+let webpackServerMap;
 let webpackModules;
 let webpackModuleLoading;
 let React;
 let ReactServer;
 let ReactDOMServer;
 let ReactServerDOMServer;
+let ReactServerDOMStaticServer;
 let ReactServerDOMClient;
 let use;
+let reactServerAct;
 
 function normalizeCodeLocInfo(str) {
   return (
@@ -52,6 +51,8 @@ describe('ReactFlightDOMEdge', () => {
   beforeEach(() => {
     jest.resetModules();
 
+    reactServerAct = require('internal-test-utils').serverAct;
+
     // Simulate the condition resolution
     jest.mock('react', () => require('react/react.react-server'));
     jest.mock('react-server-dom-webpack/server', () =>
@@ -63,11 +64,18 @@ describe('ReactFlightDOMEdge', () => {
     serverExports = WebpackMock.serverExports;
     clientExports = WebpackMock.clientExports;
     webpackMap = WebpackMock.webpackMap;
+    webpackServerMap = WebpackMock.webpackServerMap;
     webpackModules = WebpackMock.webpackModules;
     webpackModuleLoading = WebpackMock.moduleLoading;
 
     ReactServer = require('react');
     ReactServerDOMServer = require('react-server-dom-webpack/server');
+    if (__EXPERIMENTAL__) {
+      jest.mock('react-server-dom-webpack/static', () =>
+        require('react-server-dom-webpack/static.edge'),
+      );
+      ReactServerDOMStaticServer = require('react-server-dom-webpack/static');
+    }
 
     jest.resetModules();
     __unmockReact();
@@ -80,6 +88,17 @@ describe('ReactFlightDOMEdge', () => {
     ReactServerDOMClient = require('react-server-dom-webpack/client');
     use = React.use;
   });
+
+  async function serverAct(callback) {
+    let maybePromise;
+    await reactServerAct(() => {
+      maybePromise = callback();
+      if (maybePromise && typeof maybePromise.catch === 'function') {
+        maybePromise.catch(() => {});
+      }
+    });
+    return maybePromise;
+  }
 
   function passThrough(stream) {
     // Simulate more realistic network by splitting up and rejoining some chunks.
@@ -174,12 +193,11 @@ describe('ReactFlightDOMEdge', () => {
       return <ClientComponentOnTheClient />;
     }
 
-    const stream = ReactServerDOMServer.renderToReadableStream(
-      <App />,
-      webpackMap,
+    const stream = await serverAct(() =>
+      ReactServerDOMServer.renderToReadableStream(<App />, webpackMap),
     );
     const response = ReactServerDOMClient.createFromReadableStream(stream, {
-      ssrManifest: {
+      serverConsumerManifest: {
         moduleMap: translationMap,
         moduleLoading: webpackModuleLoading,
       },
@@ -189,21 +207,93 @@ describe('ReactFlightDOMEdge', () => {
       return use(response);
     }
 
-    const ssrStream = await ReactDOMServer.renderToReadableStream(
-      <ClientRoot />,
+    const ssrStream = await serverAct(() =>
+      ReactDOMServer.renderToReadableStream(<ClientRoot />),
     );
     const result = await readResult(ssrStream);
     expect(result).toEqual('<span>Client Component</span>');
+  });
+
+  it('should be able to load a server reference on a consuming server if a mapping exists', async () => {
+    function greet(name) {
+      return 'hi, ' + name;
+    }
+    const ServerModule = serverExports({
+      greet,
+    });
+
+    const stream = await serverAct(() =>
+      ReactServerDOMServer.renderToReadableStream(
+        {
+          method: ServerModule.greet,
+          boundMethod: ServerModule.greet.bind(null, 'there'),
+        },
+        webpackMap,
+      ),
+    );
+    const response = ReactServerDOMClient.createFromReadableStream(stream, {
+      serverConsumerManifest: {
+        moduleMap: webpackMap,
+        serverModuleMap: webpackServerMap,
+        moduleLoading: webpackModuleLoading,
+      },
+    });
+
+    const result = await response;
+
+    expect(result.method).toBe(greet);
+    expect(result.boundMethod()).toBe('hi, there');
+  });
+
+  it('should be able to load a server reference on a consuming server if a mapping exists (async)', async () => {
+    let resolve;
+    const chunkPromise = new Promise(r => (resolve = r));
+
+    function greet(name) {
+      return 'hi, ' + name;
+    }
+    const ServerModule = serverExports(
+      {
+        greet,
+      },
+      chunkPromise,
+    );
+
+    const stream = await serverAct(() =>
+      ReactServerDOMServer.renderToReadableStream(
+        {
+          method: ServerModule.greet,
+          boundMethod: ServerModule.greet.bind(null, 'there'),
+        },
+        webpackMap,
+      ),
+    );
+    const response = ReactServerDOMClient.createFromReadableStream(stream, {
+      serverConsumerManifest: {
+        moduleMap: webpackMap,
+        serverModuleMap: webpackServerMap,
+        moduleLoading: webpackModuleLoading,
+      },
+    });
+
+    await resolve();
+
+    const result = await response;
+
+    expect(result.method).toBe(greet);
+    expect(result.boundMethod()).toBe('hi, there');
   });
 
   it('should encode long string in a compact format', async () => {
     const testString = '"\n\t'.repeat(500) + '🙃';
     const testString2 = 'hello'.repeat(400);
 
-    const stream = ReactServerDOMServer.renderToReadableStream({
-      text: testString,
-      text2: testString2,
-    });
+    const stream = await serverAct(() =>
+      ReactServerDOMServer.renderToReadableStream({
+        text: testString,
+        text2: testString2,
+      }),
+    );
     const [stream1, stream2] = passThrough(stream).tee();
 
     const serializedContent = await readResult(stream1);
@@ -217,7 +307,7 @@ describe('ReactFlightDOMEdge', () => {
     const result = await ReactServerDOMClient.createFromReadableStream(
       stream2,
       {
-        ssrManifest: {
+        serverConsumerManifest: {
           moduleMap: null,
           moduleLoading: null,
         },
@@ -234,7 +324,9 @@ describe('ReactFlightDOMEdge', () => {
       with: {many: 'properties in it'},
     };
     const props = {root: <div>{new Array(30).fill(obj)}</div>};
-    const stream = ReactServerDOMServer.renderToReadableStream(props);
+    const stream = await serverAct(() =>
+      ReactServerDOMServer.renderToReadableStream(props),
+    );
     const [stream1, stream2] = passThrough(stream).tee();
 
     const serializedContent = await readResult(stream1);
@@ -243,7 +335,7 @@ describe('ReactFlightDOMEdge', () => {
     const result = await ReactServerDOMClient.createFromReadableStream(
       stream2,
       {
-        ssrManifest: {
+        serverConsumerManifest: {
           moduleMap: null,
           moduleLoading: null,
         },
@@ -302,23 +394,27 @@ describe('ReactFlightDOMEdge', () => {
       </>
     );
     const resolvedChildren = new Array(30).fill(str);
-    const stream = ReactServerDOMServer.renderToReadableStream(children);
+    const stream = await serverAct(() =>
+      ReactServerDOMServer.renderToReadableStream(children),
+    );
     const [stream1, stream2] = passThrough(stream).tee();
 
     const serializedContent = await readResult(stream1);
 
-    expect(serializedContent.length).toBeLessThan(410);
+    expect(serializedContent.length).toBeLessThan(425);
     expect(timesRendered).toBeLessThan(5);
 
     const model = await ReactServerDOMClient.createFromReadableStream(stream2, {
-      ssrManifest: {
+      serverConsumerManifest: {
         moduleMap: null,
         moduleLoading: null,
       },
     });
 
     // Use the SSR render to resolve any lazy elements
-    const ssrStream = await ReactDOMServer.renderToReadableStream(model);
+    const ssrStream = await serverAct(() =>
+      ReactDOMServer.renderToReadableStream(model),
+    );
     // Should still match the result when parsed
     const result = await readResult(ssrStream);
     expect(result).toEqual(resolvedChildren.join('<!-- -->'));
@@ -370,22 +466,28 @@ describe('ReactFlightDOMEdge', () => {
     const resolvedChildren = new Array(30).fill(
       '<div>this is a long return value</div>',
     );
-    const stream = ReactServerDOMServer.renderToReadableStream(children);
+    const stream = await serverAct(() =>
+      ReactServerDOMServer.renderToReadableStream(children),
+    );
     const [stream1, stream2] = passThrough(stream).tee();
 
     const serializedContent = await readResult(stream1);
-    expect(serializedContent.length).toBeLessThan(__DEV__ ? 590 : 400);
+    expect(serializedContent.length).toBeLessThan(__DEV__ ? 605 : 400);
     expect(timesRendered).toBeLessThan(5);
 
-    const model = await ReactServerDOMClient.createFromReadableStream(stream2, {
-      ssrManifest: {
-        moduleMap: null,
-        moduleLoading: null,
-      },
-    });
+    const model = await serverAct(() =>
+      ReactServerDOMClient.createFromReadableStream(stream2, {
+        serverConsumerManifest: {
+          moduleMap: null,
+          moduleLoading: null,
+        },
+      }),
+    );
 
     // Use the SSR render to resolve any lazy elements
-    const ssrStream = await ReactDOMServer.renderToReadableStream(model);
+    const ssrStream = await serverAct(() =>
+      ReactDOMServer.renderToReadableStream(model),
+    );
     // Should still match the result when parsed
     const result = await readResult(ssrStream);
     expect(result).toEqual(resolvedChildren.join(''));
@@ -398,8 +500,10 @@ describe('ReactFlightDOMEdge', () => {
       }
       return <div>Fin</div>;
     }
-    const stream = ReactServerDOMServer.renderToReadableStream(
-      <ServerComponent recurse={20} />,
+    const stream = await serverAct(() =>
+      ReactServerDOMServer.renderToReadableStream(
+        <ServerComponent recurse={20} />,
+      ),
     );
     const serializedContent = await readResult(stream);
     const expectedDebugInfoSize = __DEV__ ? 300 * 20 : 0;
@@ -426,11 +530,11 @@ describe('ReactFlightDOMEdge', () => {
       new BigUint64Array(buffer, 0),
       new DataView(buffer, 3),
     ];
-    const stream = passThrough(
-      ReactServerDOMServer.renderToReadableStream(buffers),
+    const stream = await serverAct(() =>
+      passThrough(ReactServerDOMServer.renderToReadableStream(buffers)),
     );
     const result = await ReactServerDOMClient.createFromReadableStream(stream, {
-      ssrManifest: {
+      serverConsumerManifest: {
         moduleMap: null,
         moduleLoading: null,
       },
@@ -446,11 +550,11 @@ describe('ReactFlightDOMEdge', () => {
     const blob = new Blob([bytes, bytes], {
       type: 'application/x-test',
     });
-    const stream = passThrough(
-      ReactServerDOMServer.renderToReadableStream(blob),
+    const stream = await serverAct(() =>
+      passThrough(ReactServerDOMServer.renderToReadableStream(blob)),
     );
     const result = await ReactServerDOMClient.createFromReadableStream(stream, {
-      ssrManifest: {
+      serverConsumerManifest: {
         moduleMap: null,
         moduleLoading: null,
       },
@@ -476,11 +580,11 @@ describe('ReactFlightDOMEdge', () => {
     expect(formData.get('file') instanceof File).toBe(true);
     expect(formData.get('file').name).toBe('filename.test');
 
-    const stream = passThrough(
-      ReactServerDOMServer.renderToReadableStream(formData),
+    const stream = await serverAct(() =>
+      passThrough(ReactServerDOMServer.renderToReadableStream(formData)),
     );
     const result = await ReactServerDOMClient.createFromReadableStream(stream, {
-      ssrManifest: {
+      serverConsumerManifest: {
         moduleMap: null,
         moduleLoading: null,
       },
@@ -507,15 +611,15 @@ describe('ReactFlightDOMEdge', () => {
     const map = new Map();
     map.set('value', awaitedValue);
 
-    const stream = passThrough(
-      ReactServerDOMServer.renderToReadableStream(map, webpackMap),
+    const stream = await serverAct(() =>
+      passThrough(ReactServerDOMServer.renderToReadableStream(map, webpackMap)),
     );
 
     // Parsing the root blocks because the module hasn't loaded yet
     const resultPromise = ReactServerDOMClient.createFromReadableStream(
       stream,
       {
-        ssrManifest: {
+        serverConsumerManifest: {
           moduleMap: null,
           moduleLoading: null,
         },
@@ -549,16 +653,18 @@ describe('ReactFlightDOMEdge', () => {
       },
     });
 
-    const stream = passThrough(
-      ReactServerDOMServer.renderToReadableStream(s, webpackMap),
+    const stream = await serverAct(() =>
+      passThrough(ReactServerDOMServer.renderToReadableStream(s, webpackMap)),
     );
 
-    const result = await ReactServerDOMClient.createFromReadableStream(stream, {
-      ssrManifest: {
-        moduleMap: null,
-        moduleLoading: null,
-      },
-    });
+    const result = await serverAct(() =>
+      ReactServerDOMClient.createFromReadableStream(stream, {
+        serverConsumerManifest: {
+          moduleMap: null,
+          moduleLoading: null,
+        },
+      }),
+    );
 
     const reader = result.getReader();
 
@@ -589,20 +695,24 @@ describe('ReactFlightDOMEdge', () => {
       },
     };
 
-    const stream = passThrough(
-      ReactServerDOMServer.renderToReadableStream(
-        multiShotIterable,
-        webpackMap,
+    const stream = await serverAct(() =>
+      passThrough(
+        ReactServerDOMServer.renderToReadableStream(
+          multiShotIterable,
+          webpackMap,
+        ),
       ),
     );
 
     // Parsing the root blocks because the module hasn't loaded yet
-    const result = await ReactServerDOMClient.createFromReadableStream(stream, {
-      ssrManifest: {
-        moduleMap: null,
-        moduleLoading: null,
-      },
-    });
+    const result = await serverAct(() =>
+      ReactServerDOMClient.createFromReadableStream(stream, {
+        serverConsumerManifest: {
+          moduleMap: null,
+          moduleLoading: null,
+        },
+      }),
+    );
 
     const iterator = result[Symbol.asyncIterator]();
 
@@ -635,9 +745,11 @@ describe('ReactFlightDOMEdge', () => {
       },
     };
 
-    const stream = ReactServerDOMServer.renderToReadableStream({
-      iterable,
-    });
+    const stream = await serverAct(() =>
+      ReactServerDOMServer.renderToReadableStream({
+        iterable,
+      }),
+    );
     const [stream1, stream2] = passThrough(stream).tee();
 
     const serializedContent = await readResult(stream1);
@@ -649,7 +761,7 @@ describe('ReactFlightDOMEdge', () => {
     const result = await ReactServerDOMClient.createFromReadableStream(
       stream2,
       {
-        ssrManifest: {
+        serverConsumerManifest: {
           moduleMap: null,
           moduleLoading: null,
         },
@@ -728,14 +840,16 @@ describe('ReactFlightDOMEdge', () => {
       },
     });
 
-    const stream = ReactServerDOMServer.renderToReadableStream(s, {});
+    const stream = await serverAct(() =>
+      ReactServerDOMServer.renderToReadableStream(s, {}),
+    );
 
     const [stream1, stream2] = passThrough(stream).tee();
 
     const result = await ReactServerDOMClient.createFromReadableStream(
       stream1,
       {
-        ssrManifest: {
+        serverConsumerManifest: {
           moduleMap: null,
           moduleLoading: null,
         },
@@ -785,14 +899,16 @@ describe('ReactFlightDOMEdge', () => {
       },
     });
 
-    const stream = ReactServerDOMServer.renderToReadableStream(s, {});
+    const stream = await serverAct(() =>
+      ReactServerDOMServer.renderToReadableStream(s, {}),
+    );
 
     const [stream1, stream2] = passThrough(stream).tee();
 
     const result = await ReactServerDOMClient.createFromReadableStream(
       stream1,
       {
-        ssrManifest: {
+        serverConsumerManifest: {
           moduleMap: null,
           moduleLoading: null,
         },
@@ -841,23 +957,21 @@ describe('ReactFlightDOMEdge', () => {
       greeting: ReactServer.createElement(Greeting, {firstName: 'Seb'}),
     };
 
-    const stream = ReactServerDOMServer.renderToReadableStream(
-      model,
-      webpackMap,
+    const stream = await serverAct(() =>
+      ReactServerDOMServer.renderToReadableStream(model, webpackMap),
     );
 
-    const rootModel = await ReactServerDOMClient.createFromReadableStream(
-      stream,
-      {
-        ssrManifest: {
+    const rootModel = await serverAct(() =>
+      ReactServerDOMClient.createFromReadableStream(stream, {
+        serverConsumerManifest: {
           moduleMap: null,
           moduleLoading: null,
         },
-      },
+      }),
     );
 
-    const ssrStream = await ReactDOMServer.renderToReadableStream(
-      rootModel.greeting,
+    const ssrStream = await serverAct(() =>
+      ReactDOMServer.renderToReadableStream(rootModel.greeting),
     );
     const result = await readResult(ssrStream);
     expect(result).toEqual('<span>Hello, Seb</span>');
@@ -916,13 +1030,15 @@ describe('ReactFlightDOMEdge', () => {
       return ReactServer.createElement('span', null, 'hi');
     }
 
-    const stream = ReactServerDOMServer.renderToReadableStream(
-      ReactServer.createElement(
-        'div',
-        null,
-        ReactServer.createElement(Foo, null),
+    const stream = await serverAct(() =>
+      ReactServerDOMServer.renderToReadableStream(
+        ReactServer.createElement(
+          'div',
+          null,
+          ReactServer.createElement(Foo, null),
+        ),
+        webpackMap,
       ),
-      webpackMap,
     );
     await readResult(stream);
 
@@ -943,35 +1059,31 @@ describe('ReactFlightDOMEdge', () => {
       root: ReactServer.createElement(Erroring),
     };
 
-    const stream = ReactServerDOMServer.renderToReadableStream(
-      model,
-      webpackMap,
-      {
+    const stream = await serverAct(() =>
+      ReactServerDOMServer.renderToReadableStream(model, webpackMap, {
         onError() {},
-      },
+      }),
     );
 
-    const rootModel = await ReactServerDOMClient.createFromReadableStream(
-      stream,
-      {
-        ssrManifest: {
+    const rootModel = await serverAct(() =>
+      ReactServerDOMClient.createFromReadableStream(stream, {
+        serverConsumerManifest: {
           moduleMap: null,
           moduleLoading: null,
         },
-      },
+      }),
     );
 
     const errors = [];
-    const result = ReactDOMServer.renderToReadableStream(
-      <div>{rootModel.root}</div>,
-      {
+    const result = serverAct(() =>
+      ReactDOMServer.renderToReadableStream(<div>{rootModel.root}</div>, {
         onError(error, {componentStack}) {
           errors.push({
             error,
             componentStack: normalizeCodeLocInfo(componentStack),
           });
         },
-      },
+      }),
     );
 
     const theError = new Error('my error');
@@ -999,5 +1111,146 @@ describe('ReactFlightDOMEdge', () => {
         componentStack: (__DEV__ ? '\n    in Erroring' : '') + '\n    in div',
       },
     ]);
+  });
+
+  // @gate experimental
+  it('can prerender', async () => {
+    let resolveGreeting;
+    const greetingPromise = new Promise(resolve => {
+      resolveGreeting = resolve;
+    });
+
+    function App() {
+      return (
+        <div>
+          <Greeting />
+        </div>
+      );
+    }
+
+    async function Greeting() {
+      await greetingPromise;
+      return 'hello world';
+    }
+
+    const {pendingResult} = await serverAct(async () => {
+      // destructure trick to avoid the act scope from awaiting the returned value
+      return {
+        pendingResult: ReactServerDOMStaticServer.prerender(
+          <App />,
+          webpackMap,
+        ),
+      };
+    });
+
+    resolveGreeting();
+    const {prelude} = await pendingResult;
+
+    function ClientRoot({response}) {
+      return use(response);
+    }
+
+    const response = ReactServerDOMClient.createFromReadableStream(prelude, {
+      serverConsumerManifest: {
+        moduleMap: null,
+        moduleLoading: null,
+      },
+    });
+    // Use the SSR render to resolve any lazy elements
+    const ssrStream = await serverAct(() =>
+      ReactDOMServer.renderToReadableStream(
+        React.createElement(ClientRoot, {response}),
+      ),
+    );
+    // Should still match the result when parsed
+    const result = await readResult(ssrStream);
+    expect(result).toBe('<div>hello world</div>');
+  });
+
+  // @gate enableHalt
+  it('does not propagate abort reasons errors when aborting a prerender', async () => {
+    let resolveGreeting;
+    const greetingPromise = new Promise(resolve => {
+      resolveGreeting = resolve;
+    });
+
+    function App() {
+      return (
+        <div>
+          <ReactServer.Suspense fallback="loading...">
+            <Greeting />
+          </ReactServer.Suspense>
+        </div>
+      );
+    }
+
+    async function Greeting() {
+      await greetingPromise;
+      return 'hello world';
+    }
+
+    const controller = new AbortController();
+    const errors = [];
+    const {pendingResult} = await serverAct(async () => {
+      // destructure trick to avoid the act scope from awaiting the returned value
+      return {
+        pendingResult: ReactServerDOMStaticServer.prerender(
+          <App />,
+          webpackMap,
+          {
+            signal: controller.signal,
+            onError(err) {
+              errors.push(err);
+            },
+          },
+        ),
+      };
+    });
+
+    controller.abort('boom');
+    resolveGreeting();
+    const {prelude} = await pendingResult;
+
+    expect(errors).toEqual(['boom']);
+
+    function ClientRoot({response}) {
+      return use(response);
+    }
+
+    const response = ReactServerDOMClient.createFromReadableStream(prelude, {
+      serverConsumerManifest: {
+        moduleMap: null,
+        moduleLoading: null,
+      },
+    });
+    const fizzController = new AbortController();
+    errors.length = 0;
+    const ssrStream = await serverAct(() =>
+      ReactDOMServer.renderToReadableStream(
+        React.createElement(ClientRoot, {response}),
+        {
+          signal: fizzController.signal,
+          onError(error) {
+            errors.push(error);
+          },
+        },
+      ),
+    );
+    fizzController.abort('bam');
+    if (__DEV__) {
+      expect(errors).toEqual([new Error('Connection closed.')]);
+    } else {
+      // This is likely a bug. In Dev we get a connection closed error
+      // because the debug info creates a chunk that has a pending status
+      // and when the stream finishes we error if any chunks are still pending.
+      // In production there is no debug info so the missing chunk is never instantiated
+      // because nothing triggers model evaluation before the stream completes
+      expect(errors).toEqual(['bam']);
+    }
+    // Should still match the result when parsed
+    const result = await readResult(ssrStream);
+    const div = document.createElement('div');
+    div.innerHTML = result;
+    expect(div.textContent).toBe('loading...');
   });
 });

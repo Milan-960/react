@@ -19,15 +19,18 @@ export const {
   disableDefaultPropsExceptForClasses,
   disableLegacyContextForFunctionComponents,
   disableSchedulerTimeoutInWorkLoop,
-  enableAddPropertiesFastPath,
+  disableStringRefs,
   enableDebugTracing,
   enableDeferRootSchedulingToMicrotask,
   enableDO_NOT_USE_disableStrictPassiveEffect,
+  enableHiddenSubtreeInsertionEffectCleanup,
   enableInfiniteRenderLoopDetection,
+  enableLogStringRefsProd,
   enableNoCloningMemoCache,
   enableObjectFiber,
   enableRenderableContext,
   enableRetryLaneExpiration,
+  enableSiblingPrerendering,
   enableTransitionTracing,
   enableTrustedTypesIntegration,
   favorSafetyOverHydrationPerf,
@@ -60,6 +63,8 @@ export const disableInputAttributeSyncing = false;
 export const enableLegacyFBSupport = true;
 export const enableLazyContextPropagation = true;
 
+export const enableComponentPerformanceTrack = false;
+
 // Logs additional User Timing API marks for use with an experimental profiling tool.
 export const enableSchedulingProfiler: boolean =
   __PROFILE__ && dynamicFeatureFlags.enableSchedulingProfiler;
@@ -77,6 +82,8 @@ export const enableAsyncIterableChildren = false;
 export const enableTaint = false;
 
 export const enablePostpone = false;
+
+export const enableHalt = false;
 
 export const enableContextProfiling = true;
 
@@ -113,10 +120,6 @@ export const enableServerComponentLogs = true;
 
 export const enableReactTestRendererWarning = false;
 export const useModernStrictMode = true;
-
-// TODO: Roll out with GK. Don't keep as dynamic flag for too long, though,
-// because JSX is an extremely hot path.
-export const disableStringRefs = false;
 
 export const disableLegacyMode: boolean =
   __EXPERIMENTAL__ || dynamicFeatureFlags.disableLegacyMode;

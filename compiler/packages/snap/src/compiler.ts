@@ -21,6 +21,7 @@ import type {
 } from 'babel-plugin-react-compiler/src/Entrypoint';
 import type {Effect, ValueKind} from 'babel-plugin-react-compiler/src/HIR';
 import type {
+  EnvironmentConfig,
   Macro,
   MacroMethod,
   parseConfigPragma as ParseConfigPragma,
@@ -31,6 +32,7 @@ import path from 'path';
 import prettier from 'prettier';
 import SproutTodoFilter from './SproutTodoFilter';
 import {isExpectError} from './fixture-utils';
+import {makeSharedRuntimeTypeProvider} from './sprout/shared-runtime-type-provider';
 export function parseLanguage(source: string): 'flow' | 'typescript' {
   return source.indexOf('@flow') !== -1 ? 'flow' : 'typescript';
 }
@@ -38,13 +40,14 @@ export function parseLanguage(source: string): 'flow' | 'typescript' {
 function makePluginOptions(
   firstLine: string,
   parseConfigPragmaFn: typeof ParseConfigPragma,
+  EffectEnum: typeof Effect,
+  ValueKindEnum: typeof ValueKind,
 ): [PluginOptions, Array<{filename: string | null; event: LoggerEvent}>] {
   let gating = null;
   let enableEmitInstrumentForget = null;
   let enableEmitFreeze = null;
   let enableEmitHookGuards = null;
   let compilationMode: CompilationMode = 'all';
-  let runtimeModule = null;
   let panicThreshold: PanicThresholdOptions = 'all_errors';
   let hookPattern: string | null = null;
   // TODO(@mofeiZ) rewrite snap fixtures to @validatePreserveExistingMemo:false
@@ -52,6 +55,7 @@ function makePluginOptions(
   let enableChangeDetectionForDebugging = null;
   let customMacros: null | Array<Macro> = null;
   let validateBlocklistedImports = null;
+  let target = '19' as const;
 
   if (firstLine.indexOf('@compilationMode(annotation)') !== -1) {
     assert(
@@ -99,10 +103,13 @@ function makePluginOptions(
       importSpecifierName: '$dispatcherGuard',
     };
   }
-  const runtimeModuleMatch = /@runtimeModule="([^"]+)"/.exec(firstLine);
-  if (runtimeModuleMatch) {
-    runtimeModule = runtimeModuleMatch[1];
+
+  const targetMatch = /@target="([^"]+)"/.exec(firstLine);
+  if (targetMatch) {
+    // @ts-ignore
+    target = targetMatch[1];
   }
+
   if (firstLine.includes('@panicThreshold(none)')) {
     panicThreshold = 'none';
   }
@@ -198,6 +205,11 @@ function makePluginOptions(
     };
   }
 
+  let inlineJsxTransform: EnvironmentConfig['inlineJsxTransform'] = null;
+  if (firstLine.includes('@enableInlineJsxTransform')) {
+    inlineJsxTransform = {elementSymbol: 'react.transitional.element'};
+  }
+
   let logs: Array<{filename: string | null; event: LoggerEvent}> = [];
   let logger: Logger | null = null;
   if (firstLine.includes('@logger')) {
@@ -212,35 +224,10 @@ function makePluginOptions(
   const options = {
     environment: {
       ...config,
-      customHooks: new Map([
-        [
-          'useFreeze',
-          {
-            valueKind: 'frozen' as ValueKind,
-            effectKind: 'freeze' as Effect,
-            transitiveMixedData: false,
-            noAlias: false,
-          },
-        ],
-        [
-          'useFragment',
-          {
-            valueKind: 'frozen' as ValueKind,
-            effectKind: 'freeze' as Effect,
-            transitiveMixedData: true,
-            noAlias: true,
-          },
-        ],
-        [
-          'useNoAlias',
-          {
-            valueKind: 'mutable' as ValueKind,
-            effectKind: 'read' as Effect,
-            transitiveMixedData: false,
-            noAlias: true,
-          },
-        ],
-      ]),
+      moduleTypeProvider: makeSharedRuntimeTypeProvider({
+        EffectEnum,
+        ValueKindEnum,
+      }),
       customMacros,
       enableEmitFreeze,
       enableEmitInstrumentForget,
@@ -252,17 +239,18 @@ function makePluginOptions(
       enableChangeDetectionForDebugging,
       lowerContextAccess,
       validateBlocklistedImports,
+      inlineJsxTransform,
     },
     compilationMode,
     logger,
     gating,
     panicThreshold,
     noEmit: false,
-    runtimeModule,
     eslintSuppressionRules,
     flowSuppressions,
     ignoreUseNoForget,
     enableReanimatedCheck: false,
+    target,
   };
   return [options, logs];
 }
@@ -383,6 +371,8 @@ export async function transformFixtureInput(
   parseConfigPragmaFn: typeof ParseConfigPragma,
   plugin: BabelCore.PluginObj,
   includeEvaluator: boolean,
+  EffectEnum: typeof Effect,
+  ValueKindEnum: typeof ValueKind,
 ): Promise<{kind: 'ok'; value: TransformResult} | {kind: 'err'; msg: string}> {
   // Extract the first line to quickly check for custom test directives
   const firstLine = input.substring(0, input.indexOf('\n'));
@@ -405,7 +395,12 @@ export async function transformFixtureInput(
   /**
    * Get Forget compiled code
    */
-  const [options, logs] = makePluginOptions(firstLine, parseConfigPragmaFn);
+  const [options, logs] = makePluginOptions(
+    firstLine,
+    parseConfigPragmaFn,
+    EffectEnum,
+    ValueKindEnum,
+  );
   const forgetResult = transformFromAstSync(inputAst, input, {
     filename: virtualFilepath,
     highlightCode: false,
