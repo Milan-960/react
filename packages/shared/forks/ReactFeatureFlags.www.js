@@ -33,7 +33,7 @@ export const {
   retryLaneExpirationMs,
   syncLaneExpirationMs,
   transitionLaneExpirationMs,
-  enableFastAddPropertiesInDiffing,
+  enableViewTransition,
   enableComponentPerformanceTrack,
   enableScrollEndPolyfill,
   enableFragmentRefs,
@@ -104,8 +104,6 @@ export const enableReactTestRendererWarning = false;
 
 export const disableLegacyMode = true;
 
-export const enableShallowPropDiffing = false;
-
 export const enableEagerAlternateStateNodeCleanup = false;
 
 export const enableLazyPublicInstanceInFabric = false;
@@ -117,7 +115,6 @@ export const enableFizzBlockingRender = true;
 export const enableSrcObject = false;
 export const enableHydrationChangeEvent = false;
 export const enableDefaultTransitionIndicator = false;
-export const enableViewTransition = true;
 
 export const ownerStackLimit = 1e4;
 
