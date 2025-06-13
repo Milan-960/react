@@ -141,8 +141,6 @@ export const passChildrenWhenCloningPersistedNodes = false;
  */
 export const enablePersistedModeClonedFlag = false;
 
-export const enableShallowPropDiffing = false;
-
 export const enableEagerAlternateStateNodeCleanup = true;
 
 /**
@@ -159,7 +157,6 @@ export const transitionLaneExpirationMs = 5000;
  */
 export const enableInfiniteRenderLoopDetection = false;
 
-export const enableFastAddPropertiesInDiffing = true;
 export const enableLazyPublicInstanceInFabric = false;
 
 export const enableFragmentRefs = __EXPERIMENTAL__;
@@ -206,9 +203,6 @@ export const enableReactTestRendererWarning = true;
 // This allows us to land breaking changes to remove legacy mode APIs in experimental builds
 // before removing them in stable in the next Major
 export const disableLegacyMode = true;
-
-// Make <Context> equivalent to <Context.Provider> instead of <Context.Consumer>
-export const enableRenderableContext = true;
 
 // -----------------------------------------------------------------------------
 // Chopping Block
